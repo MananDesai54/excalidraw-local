@@ -28,6 +28,8 @@ export default function FileBrowserModal({
   const [selected, setSelected] = useState<string | null>(null);
   const [newName, setNewName] = useState("untitled.excalidraw");
   const [creating, setCreating] = useState(false);
+  const [newFolder, setNewFolder] = useState("new-folder");
+  const [creatingFolder, setCreatingFolder] = useState(false);
 
   const fetchList = useCallback(async () => {
     if (!open) return;
@@ -51,6 +53,27 @@ export default function FileBrowserModal({
       setLoading(false);
     }
   }, [dir, open]);
+
+  async function createFolder() {
+    setCreatingFolder(true);
+    setError(null);
+    try {
+      const name = newFolder.replace(/\/+$/, ""); // no trailing slash
+      const folderPath = joinPath(dir, name);
+      const sentinel = joinPath(folderPath, ".keep");
+      const res = await fetch("/api/files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: sentinel }), // server will mkdir -p for the file
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setDir(folderPath.endsWith("/") ? folderPath : folderPath + "/"); // jump into it
+    } catch (e: any) {
+      setError(e.message || "Failed to create folder");
+    } finally {
+      setCreatingFolder(false);
+    }
+  }
 
   useEffect(() => {
     void fetchList();
@@ -157,6 +180,20 @@ export default function FileBrowserModal({
             disabled={creating}
           >
             {creating ? <span className="spinner" /> : "Create"}
+          </button>
+          <input
+            className="ip"
+            style={{ maxWidth: 220 }}
+            placeholder="new-folder"
+            value={newFolder}
+            onChange={(e) => setNewFolder(e.target.value)}
+          />
+          <button
+            className="btn"
+            onClick={createFolder}
+            disabled={creatingFolder}
+          >
+            {creatingFolder ? <span className="spinner" /> : "New Folder"}
           </button>
         </div>
 
