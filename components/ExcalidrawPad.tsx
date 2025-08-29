@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types/types";
+import FileBrowserModal from "@/components/FileBrowserModal";
+import { useRouter } from "next/navigation";
 
 const Excalidraw = dynamic(
   () => import("@excalidraw/excalidraw").then((m) => m.Excalidraw),
@@ -11,28 +13,6 @@ const Excalidraw = dynamic(
 );
 
 type InitialData = any;
-
-function sanitizeForInitialData(data: any) {
-  const out = { ...(data || {}) };
-  out.appState = { ...(out.appState || {}) };
-
-  const c = (out.appState as any).collaborators;
-  // If collaborators isn’t a real Map, convert or drop it
-  if (c && typeof (c as any).forEach !== "function") {
-    if (Array.isArray(c)) {
-      (out.appState as any).collaborators = new Map(c);
-    } else if (typeof c === "object") {
-      (out.appState as any).collaborators = new Map(Object.entries(c));
-    } else {
-      delete (out.appState as any).collaborators;
-    }
-  }
-  // if it’s missing, you can also ensure it exists:
-  if (!(out.appState as any).collaborators) {
-    (out.appState as any).collaborators = new Map();
-  }
-  return out;
-}
 
 async function fetchJSON(path: string) {
   const res = await fetch(`/api/drawing?path=${encodeURIComponent(path)}`, {
@@ -52,28 +32,44 @@ async function saveJSON(path: string, data: any) {
   return res.json() as Promise<{ ok: boolean }>;
 }
 
+// Drop/repair collaborators so Excalidraw doesn't choke on non-Map values
+function sanitizeForInitialData(data: any) {
+  const out = { ...(data || {}) };
+  out.appState = { ...(out.appState || {}) };
+  const c = (out.appState as any).collaborators;
+  if (c && typeof (c as any).forEach !== "function") {
+    if (Array.isArray(c)) (out.appState as any).collaborators = new Map(c);
+    else if (typeof c === "object")
+      (out.appState as any).collaborators = new Map(Object.entries(c));
+    else delete (out.appState as any).collaborators;
+  }
+  if (!(out.appState as any).collaborators)
+    (out.appState as any).collaborators = new Map();
+  return out;
+}
+
 export default function ExcalidrawPad({ path }: { path: string }) {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [initial, setInitial] = useState<InitialData | null>(null);
-  const [mounted, setMounted] = useState(false);
-
   const [status, setStatus] = useState<"idle" | "dirty" | "saving" | "saved">(
     "idle",
   );
   const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const router = useRouter();
+  const [fbOpen, setFbOpen] = useState(false);
 
-  // debounce timer for autosave (optional)
   const timer = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  // mount flag (avoid hydration flicker)
+  useEffect(() => setMounted(true), []);
 
+  // preload
   useEffect(() => {
     (async () => {
       try {
         const { data } = await fetchJSON(path);
-        setInitial(sanitizeForInitialData(data)); // <-- use sanitizer here
+        setInitial(sanitizeForInitialData(data));
       } catch (e: any) {
         setError(e.message || "Failed to load");
       }
@@ -84,62 +80,134 @@ export default function ExcalidrawPad({ path }: { path: string }) {
     if (!api) return;
     try {
       setStatus("saving");
-      const scene =
+      const elements =
         api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.();
       const rawAppState = api.getAppState?.();
-      const { collaborators, ...appStateNoCollab } = rawAppState || {}; // drop it
+      const { collaborators, ...appState } = rawAppState || {}; // don't persist collaborators
       const files = api.getFiles?.();
-
       const payload = {
         type: "excalidraw",
         version: 2,
-        elements: scene,
-        appState: appStateNoCollab,
+        elements,
+        appState,
         files,
       };
-
       await saveJSON(path, payload);
       setStatus("saved");
+      setTimeout(() => setStatus("idle"), 1200);
     } catch (e: any) {
       setStatus("dirty");
       setError(String(e?.message || e));
     }
   }, [api, path]);
 
-  // Optional: autosave after 1.5s of inactivity
+  // autosave after 1.2s idle
   const onChange = useCallback(() => {
     setStatus("dirty");
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => void doSave(), 10000);
+    timer.current = setTimeout(() => void doSave(), 1200);
   }, [doSave]);
 
-  return (
-    <div style={{ height: "100vh", width: "100vw" }}>
-      <div
-        style={{
-          position: "absolute",
-          top: 8,
-          right: 12,
-          zIndex: 10,
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        <button onClick={doSave}>Save</button>
-        {error && (
-          <span style={{ color: "crimson", marginLeft: 8 }}>{error}</span>
-        )}
-        <span style={{ marginLeft: 12, opacity: 0.7 }}>
-          Path: <code>{path}</code>
-        </span>
-      </div>
+  // ⌘/Ctrl+S to save
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void doSave();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [doSave]);
 
-      {mounted && (
-        <Excalidraw
-          excalidrawAPI={(inst) => setApi(inst)}
-          initialData={initial ?? undefined}
-          onChange={onChange}
-        />
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        setFbOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // status text
+  const statusLabel =
+    status === "saving"
+      ? "Saving…"
+      : status === "saved"
+        ? "Saved"
+        : status === "dirty"
+          ? "Unsaved changes"
+          : " ";
+
+  return (
+    <div className="page">
+      <header className="topbar">
+        <Link href="/" className="brand">
+          ✏️ Drawpad
+        </Link>
+        <div className="spacer" />
+        <span
+          className={`pill ${
+            status === "saved"
+              ? "pill--ok"
+              : status === "saving"
+                ? "pill--busy"
+                : status === "dirty"
+                  ? "pill--warn"
+                  : ""
+          }`}
+          aria-live="polite"
+        >
+          {status === "saving" && <span className="spinner" aria-hidden />}
+          {statusLabel}
+        </span>
+        <button
+          className="btn"
+          onClick={() => setFbOpen(true)}
+          title="Open (⌘/Ctrl+O)"
+        >
+          Open
+        </button>
+
+        <button
+          className={`btn btn--primary ${status === "saving" ? "btn--loading" : ""}`}
+          onClick={doSave}
+          disabled={status === "saving"}
+          title="Save (⌘/Ctrl+S)"
+        >
+          {status === "saving" ? <span className="spinner" /> : "Save"}
+          <kbd className="keyhint">⌘S</kbd>
+        </button>
+      </header>
+
+      {error && (
+        <div className="toast toast--error">
+          <strong>Save failed:</strong> {error}
+        </div>
       )}
+
+      <main className="canvas">
+        {mounted && (
+          <Excalidraw
+            excalidrawAPI={(inst) => setApi(inst)}
+            initialData={initial ?? undefined}
+            onChange={onChange}
+            theme="dark"
+          />
+        )}
+      </main>
+      <FileBrowserModal
+        open={fbOpen}
+        startDir={path.split("/").slice(0, -1).join("/") || "/"}
+        onClose={() => setFbOpen(false)}
+        onPick={(p) => {
+          setFbOpen(false);
+          // navigate to the picked file; the page will re-render with new ?path=
+          router.push(`/drawpad?path=${encodeURIComponent(p)}`);
+        }}
+      />
     </div>
   );
 }
