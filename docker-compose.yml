@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    container_name: next-excalidraw-app
+    environment:
+      - DRAWINGS_ROOT=/srv/excalidraw/drawings
+    volumes:
+      - ./drawings/data:/srv/excalidraw/drawings
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
