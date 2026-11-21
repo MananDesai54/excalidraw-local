@@ -14,7 +14,9 @@ import {
   readDrawing,
   rename,
   scan,
-  setRoot,
+  openFile,
+  openFolder,
+  takeLaunch,
   stripExt,
   trash,
   withExt,
@@ -25,6 +27,7 @@ import { matches, snippet, timeAgo } from "@/lib/search";
 import Thumb from "@/components/Thumb";
 import QuickOpen from "@/components/QuickOpen";
 import { DialogHost, confirm, prompt, useToast } from "@/components/Dialogs";
+import WorkspaceMenu from "@/components/WorkspaceMenu";
 
 const drawUrl = (p: string) => `/drawpad?path=${encodeURIComponent(p)}`;
 const dirUrl = (d: string) => (d === "/" ? "/" : `/?dir=${encodeURIComponent(d)}`);
@@ -62,7 +65,16 @@ function Library() {
   }, [refresh]);
 
   useEffect(() => {
-    document.title = "Drawpad";
+    document.title = root ? `${basename(root) || root} · Drawpad` : "Drawpad";
+  }, [root]);
+
+  // File passed on the command line (desktop): open it straight away.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    takeLaunch()
+      .then((p) => p && router.replace(drawUrl(p)))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
@@ -127,23 +139,33 @@ function Library() {
   }
 
   async function remove(p: string, isDir: boolean) {
-    if (await confirm(`Delete ${basename(p)}?`, `${isDir ? "The folder and everything in it" : "It"} will be moved to .trash in your drawings folder.`))
-      await run(() => trash(p), "Moved to .trash");
+    const where = isDesktop() ? "the system trash" : ".trash in the drawings folder";
+    if (await confirm(`Delete ${basename(p)}?`, `${isDir ? "The folder and everything in it" : "It"} will be moved to ${where}.`))
+      await run(() => trash(p), "Moved to trash");
   }
 
-  async function changeRoot() {
-    const next = await prompt({
-      title: "Drawings folder",
-      label: "Where drawings are stored. Point it at a docs folder or repo; subfolders show up here.",
-      value: root,
-      confirm: "Use folder",
-    });
-    if (!next || next === root) return;
-    await run(() => setRoot(next), "Folder changed");
-    router.push("/");
+  async function switchFolder(path?: string) {
+    try {
+      const r = await openFolder(path);
+      if (!r) return;
+      setQ("");
+      if (dir === "/") await refresh();
+      else router.push("/");
+    } catch (e: any) {
+      toast.show(e?.message || String(e), true);
+    }
   }
 
-  // Keyboard: / or Ctrl+F search, Ctrl+N new, Ctrl+P quick open
+  async function pickFile() {
+    try {
+      const p = await openFile();
+      if (p) router.push(drawUrl(p));
+    } catch (e: any) {
+      toast.show(e?.message || String(e), true);
+    }
+  }
+
+  // Keyboard: / or Ctrl+F search, Ctrl+N new, Ctrl+P quick open, Ctrl+O open file, Ctrl+Shift+O open folder
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea");
@@ -154,6 +176,10 @@ function Library() {
       } else if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         void newDrawing();
+      } else if (mod && e.key.toLowerCase() === "o" && isDesktop()) {
+        e.preventDefault();
+        if (e.shiftKey) void switchFolder();
+        else void pickFile();
       } else if (mod && (e.key.toLowerCase() === "p" || e.key.toLowerCase() === "o")) {
         e.preventDefault();
         setQoOpen(true);
@@ -219,6 +245,7 @@ function Library() {
         <button className="brand" onClick={() => { setQ(""); router.push("/"); }}>
           ✏️ Drawpad
         </button>
+        {isDesktop() && <WorkspaceMenu root={root} onOpenFolder={switchFolder} onOpenFile={pickFile} />}
         <input
           ref={searchRef}
           className="ip"
@@ -239,11 +266,6 @@ function Library() {
         <button className="btn btn--primary" onClick={newDrawing} title="Ctrl+N">
           New drawing
         </button>
-        {isDesktop() && (
-          <button className="btn btn--ghost" onClick={changeRoot} title="Drawings folder">
-            ⚙
-          </button>
-        )}
       </header>
 
       <main className="lib">
@@ -265,12 +287,14 @@ function Library() {
                 {crumbs.map((c, i) => (
                   <React.Fragment key={c.path}>
                     {i > 0 && <span className="muted">/</span>}
-                    <button className="crumb" onClick={() => router.push(dirUrl(c.path))}>{c.label}</button>
+                    <button className="crumb" onClick={() => router.push(dirUrl(c.path))}>
+                      {i === 0 && root ? basename(root) || root : c.label}
+                    </button>
                   </React.Fragment>
                 ))}
               </nav>
               <div className="spacer" />
-              {root && <span className="lib-root" title="Drawings folder">{root}</span>}
+              {root && <span className="lib-root" title="Open folder">{root.replace(/^\/home\/[^/]+/, "~")}</span>}
             </div>
 
             {dir === "/" && recent.length > 3 && (
@@ -305,7 +329,19 @@ function Library() {
             {here.length ? (
               <div className="grid">{here.map((d) => card(d))}</div>
             ) : (
-              !loading && (
+              !loading && dir === "/" && all.length === 0 && folders.length === 0 ? (
+                <div className="welcome">
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>No drawings in this folder yet</div>
+                  <div className="muted">
+                    Start one here, or open another folder: a docs folder, a repo, anything. Drawings are plain .excalidraw files.
+                  </div>
+                  <div className="welcome__actions">
+                    <button className="btn btn--primary" onClick={newDrawing}>New drawing</button>
+                    {isDesktop() && <button className="btn" onClick={() => switchFolder()}>Open folder…</button>}
+                    {isDesktop() && <button className="btn" onClick={pickFile}>Open file…</button>}
+                  </div>
+                </div>
+              ) : !loading && (
                 <div className="empty">
                   No drawings here yet. <button className="btn btn--sm btn--primary" onClick={newDrawing}>New drawing</button>
                 </div>

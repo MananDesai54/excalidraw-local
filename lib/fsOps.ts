@@ -49,8 +49,12 @@ export const ops: Record<string, (a: any) => Promise<any>> = {
   async get_root() {
     return root();
   },
-  async set_root() {
-    throw new Error("Set DRAWINGS_ROOT on the server to change the folder");
+  // Desktop-only workspace features; the web app serves one fixed folder.
+  async get_recents() {
+    return [];
+  },
+  async take_launch() {
+    return null;
   },
   async list_dir({ dir }) {
     await fs.mkdir(root(), { recursive: true });

@@ -1,29 +1,34 @@
 # excalidraw-local
 
 Excalidraw as a local diagram library for documentation. Drawings are plain
-`.excalidraw` files in a folder you choose (a docs folder, a git repo, …).
+`.excalidraw` files, and the desktop app opens any folder like an editor does:
+a docs folder, a git repo, anything.
 
 Runs as a **desktop app** (Rust/Tauri, no server) or as a **self-hosted web app**
 (Next.js + Docker).
 
 ## Features
 
+- **Open any folder or file** (desktop): folder switcher with recent folders,
+  Open file…, Save as…, `excalidraw-local <folder|file>`, and "Open with" for
+  `.excalidraw` files in your file manager
 - **Library** with thumbnails, folders, and recently edited drawings
 - **Full-text search** across file names, folders, and the text inside drawings (`/`)
 - **Jump to any drawing** with `Ctrl+P`
 - **Autosave** when the drawing changes; `Ctrl+S` saves immediately
-- **Rename / move / duplicate / delete** (deleted items go to `.trash/` in the drawings folder)
+- **Rename / move / duplicate / delete** (desktop: system trash; web: `.trash/` in the drawings folder)
 - **Synced exports for docs**: toggle SVG and/or PNG per drawing and an image is
   written next to the file (`diagram.excalidraw` → `diagram.svg`) on every save,
   ready to embed: `![diagram](./diagram.svg)`. Exported SVGs load fonts from a
   public CDN so they render on GitHub and in any browser.
 - Works offline (Excalidraw fonts are bundled)
 
-Shortcuts: `Ctrl+N` new drawing · `Ctrl+P` / `Ctrl+O` jump to drawing ·
-`Ctrl+S` save · `/` search
+Shortcuts: `Ctrl+N` new drawing · `Ctrl+P` jump to drawing · `Ctrl+S` save ·
+`/` search · desktop: `Ctrl+O` open file · `Ctrl+Shift+O` open folder ·
+`Ctrl+Shift+S` save as
 
-App data lives in the drawings folder: `.thumbs/` (thumbnail cache, safe to
-delete) and `.trash/`. Add both to `.gitignore` if the folder is a repo.
+The desktop app writes nothing into your folders except your drawings and the
+exports you turn on; thumbnails are cached in `~/.cache/excalidraw-local`.
 
 ## Desktop app (Linux)
 
@@ -34,9 +39,34 @@ npm ci
 npm run desktop:install   # builds and copies the binary to ~/.local/bin/excalidraw-local
 ```
 
-The drawings folder defaults to `~/Documents/excalidraw`; change it from the ⚙
-button (saved in `~/.config/excalidraw-local/config.json`) or set
-`DRAWINGS_ROOT`.
+```bash
+excalidraw-local                      # reopens the last folder
+excalidraw-local ~/work/repo/docs     # open a folder
+excalidraw-local ~/notes/flow.excalidraw   # open (or create) a file
+```
+
+The last and recent folders are kept in `~/.config/excalidraw-local/config.json`
+(first run: `~/Documents/excalidraw`, or `DRAWINGS_ROOT`).
+
+For "Open with" in file managers, register the file type once:
+
+```bash
+mkdir -p ~/.local/share/mime/packages
+cat > ~/.local/share/mime/packages/excalidraw-local.xml <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.excalidraw+json">
+    <comment>Excalidraw drawing</comment>
+    <sub-class-of type="application/json"/>
+    <glob pattern="*.excalidraw"/>
+  </mime-type>
+</mime-info>
+XML
+update-mime-database ~/.local/share/mime
+```
+
+and use a desktop entry with `Exec=excalidraw-local %f` and
+`MimeType=application/vnd.excalidraw+json;inode/directory;`.
 
 How it works: the Next.js UI is built as a static export (`STATIC_EXPORT=1`) and
 embedded in a small Tauri binary. File operations are Tauri commands in

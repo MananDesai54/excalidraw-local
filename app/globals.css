@@ -483,3 +483,84 @@ kbd,
     color: #1b2340;
     border-color: rgba(0, 0, 0, 0.15);
 }
+
+/* Workspace (folder) switcher */
+.ws {
+    position: relative;
+}
+.ws__btn {
+    max-width: 260px;
+}
+.ws__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ws__menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 40;
+    min-width: 320px;
+    max-width: 460px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    padding: 6px;
+    display: grid;
+    gap: 2px;
+}
+.ws__item {
+    appearance: none;
+    background: none;
+    border: 0;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+}
+.ws__item:hover {
+    background: rgba(255, 255, 255, 0.07);
+}
+.ws__item small {
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ws__sep {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 10px 4px;
+    border-top: 1px solid var(--line);
+    margin-top: 4px;
+}
+.ws__recent {
+    display: flex;
+    align-items: center;
+}
+.welcome {
+    display: grid;
+    gap: 14px;
+    justify-items: center;
+    padding: 48px 24px;
+    border: 1px dashed var(--line);
+    border-radius: 14px;
+    text-align: center;
+}
+.welcome__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+}

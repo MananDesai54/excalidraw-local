@@ -34,7 +34,18 @@ async function call<T>(op: string, args: Record<string, unknown> = {}): Promise<
 }
 
 export const getRoot = () => call<string>("get_root");
-export const setRoot = (root: string) => call<string>("set_root", { root });
+
+// Workspace (desktop only): which folder is open, like an editor.
+export const getRecents = () => call<string[]>("get_recents");
+export const forgetRecent = (path: string) => call<void>("forget_recent", { path });
+/** Open `path` as the workspace, or show a folder picker. Null if cancelled. */
+export const openFolder = (path?: string) => call<string | null>("open_folder", { path: path ?? null });
+/** Pick any .excalidraw file; its folder becomes the workspace. Returns its client path. */
+export const openFile = () => call<string | null>("open_file");
+/** Save a drawing anywhere via a save dialog. Returns its new client path. */
+export const saveAs = (name: string, data: unknown) => call<string | null>("save_as", { name, data });
+/** File passed on the command line, once. */
+export const takeLaunch = () => call<string | null>("take_launch");
 export const listDir = (dir: string) => call<Entry[]>("list_dir", { dir });
 export const scan = () => call<DrawingInfo[]>("scan");
 /** Create a new file (fails if it exists); parent folders are created. */

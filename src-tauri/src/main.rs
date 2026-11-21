@@ -3,21 +3,36 @@
 // The Next.js frontend is built as a static export (STATIC_EXPORT=1) and
 // embedded in the binary. Drawings are read and written directly on the
 // filesystem through Tauri commands (see lib/storage.ts on the JS side).
-// The same operations exist for the web build in lib/fsOps.ts.
+// The same core operations exist for the web build in lib/fsOps.ts.
 // No HTTP server, no open port.
+//
+// Like an editor, the app works on one open folder (the "workspace") at a
+// time. Any folder can be opened (dialog, recent list, or CLI argument), and
+// opening or saving a file elsewhere switches to that file's folder.
+// Client paths ("/sub/diagram.excalidraw") are relative to the workspace.
 
 use std::{
+    collections::hash_map::DefaultHasher,
     fs,
+    hash::{Hash, Hasher},
     io::Write,
     path::{Component, Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Mutex,
+    time::UNIX_EPOCH,
 };
 
 use base64::Engine;
 use serde_json::{json, Value};
+use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 
-const THUMBS: &str = ".thumbs";
-const TRASH: &str = ".trash";
+const MAX_RECENTS: usize = 12;
+/// Folders never worth walking when a code repo is opened as a workspace.
+const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "out", "vendor"];
+
+static ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// File passed on the command line, opened once on startup.
+static LAUNCH: Mutex<Option<String>> = Mutex::new(None);
 
 type Res<T> = Result<T, String>;
 
@@ -29,11 +44,15 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
 }
 
-fn config_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    std::env::var(var)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home().join(".config"));
-    base.join("excalidraw-local").join("config.json")
+        .unwrap_or_else(|_| home().join(fallback))
+        .join("excalidraw-local")
+}
+
+fn config_path() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", ".config").join("config.json")
 }
 
 fn read_config() -> Value {
@@ -43,21 +62,58 @@ fn read_config() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// Drawings folder: $DRAWINGS_ROOT, else config "root", else ~/Documents/excalidraw.
-fn drawings_root() -> PathBuf {
+fn write_config(cfg: &Value) {
+    let _ = write_bytes(
+        &config_path(),
+        &serde_json::to_vec_pretty(cfg).unwrap_or_default(),
+        false,
+    );
+}
+
+fn default_root() -> PathBuf {
     if let Ok(p) = std::env::var("DRAWINGS_ROOT") {
         return PathBuf::from(p);
     }
     if let Some(p) = read_config().get("root").and_then(Value::as_str) {
-        return PathBuf::from(p);
+        if Path::new(p).is_dir() {
+            return PathBuf::from(p);
+        }
     }
     home().join("Documents").join("excalidraw")
 }
 
-/// Resolve a client path like `/team/foo.excalidraw` under the drawings root,
+fn root() -> PathBuf {
+    let mut r = ROOT.lock().unwrap();
+    r.get_or_insert_with(default_root).clone()
+}
+
+/// Switch the workspace and remember it as most recent.
+fn set_workspace(dir: &Path) -> Res<String> {
+    let dir = fs::canonicalize(dir).map_err(err)?;
+    if !dir.is_dir() {
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    let s = dir.to_string_lossy().into_owned();
+    *ROOT.lock().unwrap() = Some(dir);
+    let mut cfg = read_config();
+    let mut recents: Vec<String> = cfg
+        .get("recent")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    recents.retain(|r| r != &s);
+    recents.insert(0, s.clone());
+    recents.truncate(MAX_RECENTS);
+    cfg["root"] = json!(s);
+    cfg["recent"] = json!(recents);
+    write_config(&cfg);
+    Ok(s)
+}
+
+/// Resolve a client path like `/team/foo.excalidraw` under the workspace,
 /// rejecting anything that would escape it.
 fn safe_resolve(p: &str) -> Res<PathBuf> {
-    let mut full = drawings_root();
+    let mut full = root();
     for c in Path::new(p.trim_start_matches('/')).components() {
         match c {
             Component::Normal(s) => full.push(s),
@@ -68,8 +124,40 @@ fn safe_resolve(p: &str) -> Res<PathBuf> {
     Ok(full)
 }
 
+/// Absolute path → (workspace = its folder, client path "/name").
+fn open_abs_file(abs: &Path) -> Res<String> {
+    let parent = abs.parent().ok_or("File has no folder")?;
+    set_workspace(parent)?;
+    let name = abs.file_name().ok_or("Invalid file")?.to_string_lossy();
+    Ok(format!("/{name}"))
+}
+
+/// Thumbnails live in ~/.cache, keyed by workspace, so opened folders stay clean.
+fn thumbs_dir() -> PathBuf {
+    let mut h = DefaultHasher::new();
+    root().hash(&mut h);
+    xdg("XDG_CACHE_HOME", ".cache")
+        .join("thumbs")
+        .join(format!("{:016x}", h.finish()))
+}
+
+fn thumb_rel(p: &str) -> Res<PathBuf> {
+    let mut out = thumbs_dir();
+    for c in Path::new(p.trim_start_matches('/')).components() {
+        match c {
+            Component::Normal(s) => out.push(s),
+            Component::CurDir => {}
+            _ => return Err("Invalid path".into()),
+        }
+    }
+    Ok(out)
+}
+
 fn thumb_path(p: &str) -> Res<PathBuf> {
-    safe_resolve(&format!("/{THUMBS}/{}.svg", p.trim_start_matches('/')))
+    let mut t = thumb_rel(p)?;
+    let name = format!("{}.svg", t.file_name().unwrap_or_default().to_string_lossy());
+    t.set_file_name(name);
+    Ok(t)
 }
 
 fn mtime_ms(md: &fs::Metadata) -> u64 {
@@ -139,31 +227,109 @@ fn drawing_text(v: &Value) -> String {
     s
 }
 
+// ---------------------------------------------------------------- workspace
+
 #[tauri::command]
 fn get_root() -> String {
-    drawings_root().to_string_lossy().into_owned()
+    root().to_string_lossy().into_owned()
 }
 
 #[tauri::command]
-fn set_root(root: String) -> Res<String> {
-    let root = root.trim();
-    let expanded = match root.strip_prefix("~/") {
-        Some(rest) => home().join(rest),
-        None => PathBuf::from(root),
-    };
-    if !expanded.is_absolute() {
-        return Err("Folder must be an absolute path".into());
-    }
-    fs::create_dir_all(&expanded).map_err(err)?;
-    let mut cfg = read_config();
-    cfg["root"] = json!(expanded.to_string_lossy());
-    write_pretty(&config_path(), &cfg, false)?;
-    Ok(get_root())
+fn get_recents() -> Vec<String> {
+    read_config()
+        .get("recent")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .filter(|p| Path::new(p).is_dir())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
+
+#[tauri::command]
+fn forget_recent(path: String) {
+    let mut cfg = read_config();
+    if let Some(a) = cfg.get_mut("recent").and_then(Value::as_array_mut) {
+        a.retain(|v| v.as_str() != Some(path.as_str()));
+    }
+    write_config(&cfg);
+}
+
+/// Open a folder as the workspace. Without `path`, shows a folder picker
+/// (which can also create folders). Returns None if cancelled.
+#[tauri::command]
+async fn open_folder(app: AppHandle, path: Option<String>) -> Res<Option<String>> {
+    let dir = match path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title("Open folder")
+                .set_directory(root())
+                .blocking_pick_folder();
+            match picked.and_then(|f| f.into_path().ok()) {
+                Some(p) => p,
+                None => return Ok(None),
+            }
+        }
+    };
+    fs::create_dir_all(&dir).map_err(err)?;
+    set_workspace(&dir).map(Some)
+}
+
+/// Pick any .excalidraw file; its folder becomes the workspace.
+/// Returns the client path to open, or None if cancelled.
+#[tauri::command]
+async fn open_file(app: AppHandle) -> Res<Option<String>> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Open drawing")
+        .add_filter("Excalidraw", &["excalidraw"])
+        .set_directory(root())
+        .blocking_pick_file();
+    match picked.and_then(|f| f.into_path().ok()) {
+        Some(p) => open_abs_file(&p).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Save a drawing anywhere; the target's folder becomes the workspace.
+#[tauri::command]
+async fn save_as(app: AppHandle, name: String, data: Value) -> Res<Option<String>> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Save drawing as")
+        .add_filter("Excalidraw", &["excalidraw"])
+        .set_directory(root())
+        .set_file_name(&name)
+        .blocking_save_file();
+    let Some(mut p) = picked.and_then(|f| f.into_path().ok()) else {
+        return Ok(None);
+    };
+    if p.extension().and_then(|e| e.to_str()) != Some("excalidraw") {
+        let n = format!("{}.excalidraw", p.file_name().unwrap_or_default().to_string_lossy());
+        p.set_file_name(n);
+    }
+    write_pretty(&p, &data, false)?;
+    open_abs_file(&p).map(Some)
+}
+
+/// File given on the command line, if any (returned once).
+#[tauri::command]
+fn take_launch() -> Option<String> {
+    LAUNCH.lock().unwrap().take()
+}
+
+// ---------------------------------------------------------------- files
 
 #[tauri::command]
 fn list_dir(dir: String) -> Res<Vec<Value>> {
-    fs::create_dir_all(drawings_root()).map_err(err)?;
     let full = safe_resolve(&dir)?;
     let mut out = Vec::new();
     for e in fs::read_dir(&full).map_err(err)? {
@@ -183,14 +349,13 @@ fn list_dir(dir: String) -> Res<Vec<Value>> {
     Ok(out)
 }
 
-/// Every drawing under the root, with its text, for the library and search.
+/// Every drawing under the workspace, with its text, for the library and search.
 #[tauri::command]
 fn scan() -> Res<Vec<Value>> {
-    let root = drawings_root();
-    fs::create_dir_all(&root).map_err(err)?;
+    let root = root();
     let mut out = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(root.clone(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
         let Ok(rd) = fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -198,14 +363,17 @@ fn scan() -> Res<Vec<Value>> {
                 continue;
             }
             let p = e.path();
-            let Ok(md) = fs::metadata(&p) else { continue };
-            if md.is_dir() {
-                stack.push(p);
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < 12 && !SKIP_DIRS.contains(&name.as_str()) {
+                    stack.push((p, depth + 1));
+                }
                 continue;
             }
             if !name.ends_with(".excalidraw") {
                 continue;
             }
+            let Ok(md) = fs::metadata(&p) else { continue };
             let rel = format!(
                 "/{}",
                 p.strip_prefix(&root).unwrap_or(&p).to_string_lossy()
@@ -287,13 +455,13 @@ fn write_thumb(path: String, svg: String) -> Res<()> {
     write_bytes(&thumb_path(&path)?, svg.as_bytes(), false)
 }
 
-/// Rename or move a file or folder. Fails if the target exists.
+/// Rename or move a file or folder within the workspace. Fails if the target exists.
 #[tauri::command]
 fn rename(from: String, to: String) -> Res<()> {
     let src = safe_resolve(&from)?;
     let dst = safe_resolve(&to)?;
-    if src == drawings_root() {
-        return Err("Cannot rename the root folder".into());
+    if src == root() {
+        return Err("Cannot rename the open folder".into());
     }
     if dst.exists() {
         return Err(format!("{to} already exists"));
@@ -304,10 +472,7 @@ fn rename(from: String, to: String) -> Res<()> {
     fs::rename(&src, &dst).map_err(err)?;
     // Thumbnails follow the file (folders: the whole thumb subtree).
     let (ts, td) = if dst.is_dir() {
-        (
-            safe_resolve(&format!("/{THUMBS}{from}"))?,
-            safe_resolve(&format!("/{THUMBS}{to}"))?,
-        )
+        (thumb_rel(&from)?, thumb_rel(&to)?)
     } else {
         (thumb_path(&from)?, thumb_path(&to)?)
     };
@@ -320,35 +485,56 @@ fn rename(from: String, to: String) -> Res<()> {
     Ok(())
 }
 
-/// Move a file or folder into <root>/.trash instead of deleting it.
+/// Move a file or folder to the system trash.
 #[tauri::command]
 fn trash(path: String) -> Res<()> {
     let src = safe_resolve(&path)?;
-    if src == drawings_root() {
-        return Err("Cannot delete the root folder".into());
+    if src == root() {
+        return Err("Cannot delete the open folder".into());
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let base = src
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let dst = drawings_root().join(TRASH).join(format!("{stamp}-{base}"));
-    fs::create_dir_all(dst.parent().unwrap()).map_err(err)?;
-    fs::rename(&src, &dst).map_err(err)?;
+    trash::delete(&src).map_err(err)?;
     if let Ok(t) = thumb_path(&path) {
         let _ = fs::remove_file(t);
     }
     Ok(())
 }
 
+/// `excalidraw-local [folder | file.excalidraw]`
+fn handle_cli_arg() {
+    let Some(arg) = std::env::args().skip(1).find(|a| !a.starts_with('-')) else {
+        return;
+    };
+    let p = PathBuf::from(arg.strip_prefix("file://").unwrap_or(&arg));
+    let p = if p.is_absolute() {
+        p
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    };
+    if p.is_dir() {
+        let _ = set_workspace(&p);
+    } else if p.extension().and_then(|e| e.to_str()) == Some("excalidraw") {
+        // New file paths are fine too: it opens blank and is created on first save.
+        if let Some(parent) = p.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(rel) = open_abs_file(&p) {
+            *LAUNCH.lock().unwrap() = Some(rel);
+        }
+    }
+}
+
 fn main() {
+    handle_cli_arg();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_root,
-            set_root,
+            get_recents,
+            forget_recent,
+            open_folder,
+            open_file,
+            save_as,
+            take_launch,
             list_dir,
             scan,
             create_file,

@@ -16,6 +16,9 @@ import {
   joinPath,
   writeFile,
   writeThumb,
+  isDesktop,
+  openFile,
+  saveAs,
 } from "@/lib/storage";
 import { sceneToPngBase64, sceneToSvg, type Scene } from "@/lib/excalidraw";
 import QuickOpen from "@/components/QuickOpen";
@@ -112,23 +115,27 @@ export default function ExcalidrawPad({ path }: { path: string }) {
     [path],
   );
 
+  const toPayload = (scene: Scene) => {
+    const { collaborators, ...appState } = (scene.appState || {}) as any;
+    const payload: any = {
+      type: "excalidraw",
+      version: 2,
+      source: "excalidraw-local",
+      elements: scene.elements,
+      appState,
+      files: scene.files,
+    };
+    if (syncRef.current.svg || syncRef.current.png) payload.localExport = syncRef.current;
+    return payload;
+  };
+
   const doSave = useCallback(async () => {
     const scene = currentScene();
     if (!scene) return;
     if (timer.current) clearTimeout(timer.current);
     try {
       setStatus("saving");
-      const { collaborators, ...appState } = (scene.appState || {}) as any;
-      const payload: any = {
-        type: "excalidraw",
-        version: 2,
-        source: "excalidraw-local",
-        elements: scene.elements,
-        appState,
-        files: scene.files,
-      };
-      if (syncRef.current.svg || syncRef.current.png) payload.localExport = syncRef.current;
-      await saveDrawing(path, payload);
+      await saveDrawing(path, toPayload(scene));
       dirty.current = false;
       setStatus("saved");
       // Thumbnail + synced exports are best effort and never block saving.
@@ -195,6 +202,34 @@ export default function ExcalidrawPad({ path }: { path: string }) {
     }
   }
 
+  /** Save a copy anywhere and continue editing that copy (its folder becomes the open folder). */
+  async function saveCopyAs() {
+    const scene = currentScene();
+    if (!scene) return;
+    try {
+      const target = await saveAs(basename(path), toPayload(scene));
+      if (!target) return;
+      // The open folder changed; nothing pending may be written to the old relative path.
+      if (timer.current) clearTimeout(timer.current);
+      dirty.current = false;
+      router.replace(drawUrl(target));
+    } catch (e: any) {
+      toast.show(`Save as failed: ${e?.message || e}`, true);
+    }
+  }
+
+  async function openOther() {
+    try {
+      if (dirty.current) await doSave();
+      const p = await openFile();
+      if (!p) return;
+      dirty.current = false;
+      router.push(drawUrl(p));
+    } catch (e: any) {
+      toast.show(e?.message || String(e), true);
+    }
+  }
+
   async function toggleSync(kind: "svg" | "png") {
     const next = { ...sync, [kind]: !sync[kind] };
     setSync(next);
@@ -239,9 +274,21 @@ export default function ExcalidrawPad({ path }: { path: string }) {
   // dialogs) don't fire.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const k = e.key.toLowerCase();
-      if (k === "s") {
+      if (e.shiftKey) {
+        if (k === "s" && isDesktop()) {
+          e.preventDefault();
+          e.stopPropagation();
+          void saveCopyAs();
+        }
+        return;
+      }
+      if (k === "o" && isDesktop()) {
+        e.preventDefault();
+        e.stopPropagation();
+        void openOther();
+      } else if (k === "s") {
         e.preventDefault();
         e.stopPropagation();
         void doSave();
@@ -253,7 +300,8 @@ export default function ExcalidrawPad({ path }: { path: string }) {
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [doSave]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doSave, path]);
 
   const statusLabel =
     status === "saving" ? "Saving…" : status === "saved" ? "Saved" : status === "dirty" ? "Unsaved" : "All changes saved";
@@ -285,9 +333,14 @@ export default function ExcalidrawPad({ path }: { path: string }) {
             PNG
           </button>
         </div>
-        <button className="btn" onClick={() => setQoOpen(true)} title="Jump to another drawing">
-          Open <kbd>Ctrl P</kbd>
+        <button className="btn" onClick={() => setQoOpen(true)} title="Jump to another drawing in this folder">
+          Jump to <kbd>Ctrl P</kbd>
         </button>
+        {isDesktop() && (
+          <button className="btn" onClick={saveCopyAs} title="Save a copy anywhere (Ctrl+Shift+S)">
+            Save as…
+          </button>
+        )}
         <button className="btn btn--primary" onClick={() => void doSave()} disabled={status === "saving"}>
           Save <kbd>Ctrl S</kbd>
         </button>
