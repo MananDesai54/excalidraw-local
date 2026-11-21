@@ -1,9 +1,10 @@
 "use client";
 
 import FileBrowserModal from "@/components/FileBrowserModal";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-export default function FilesPage() {
+function FilesInner() {
   const sp = useSearchParams();
   const router = useRouter();
 
@@ -19,5 +20,13 @@ export default function FilesPage() {
         router.push(`/drawpad?path=${encodeURIComponent(p)}`);
       }}
     />
+  );
+}
+
+export default function FilesPage() {
+  return (
+    <Suspense fallback={null}>
+      <FilesInner />
+    </Suspense>
   );
 }

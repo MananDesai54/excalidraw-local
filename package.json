@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p 3000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "desktop:build": "STATIC_EXPORT=1 next build && cargo build --release --manifest-path src-tauri/Cargo.toml",
+    "desktop:install": "npm run desktop:build && install -Dm755 src-tauri/target/release/excalidraw-local ~/.local/bin/excalidraw-local"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.17.0",

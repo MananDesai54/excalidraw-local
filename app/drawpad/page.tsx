@@ -1,13 +1,19 @@
 "use client";
 
-import React from "react";
+import React, { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import ExcalidrawPad from "@/components/ExcalidrawPad";
 
-export default function Page({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
-  const path = (searchParams?.path as string) || "/untitled.excalidraw";
-  return <ExcalidrawPad path={path} />;
+function DrawpadInner() {
+  const sp = useSearchParams();
+  const path = sp?.get("path") || "/untitled.excalidraw";
+  return <ExcalidrawPad key={path} path={path} />;
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={null}>
+      <DrawpadInner />
+    </Suspense>
+  );
 }

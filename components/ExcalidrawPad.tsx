@@ -1,4 +1,5 @@
 "use client";
+import { readDrawing, saveDrawing } from "@/lib/storage";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
@@ -15,21 +16,11 @@ const Excalidraw = dynamic(
 type InitialData = any;
 
 async function fetchJSON(path: string) {
-  const res = await fetch(`/api/drawing?path=${encodeURIComponent(path)}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<{ data: InitialData }>;
+  return readDrawing(path) as Promise<{ data: InitialData }>;
 }
 
 async function saveJSON(path: string, data: any) {
-  const res = await fetch(`/api/drawing?path=${encodeURIComponent(path)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<{ ok: boolean }>;
+  return saveDrawing(path, data);
 }
 
 // Drop/repair collaborators so Excalidraw doesn't choke on non-Map values

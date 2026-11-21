@@ -1,4 +1,5 @@
 "use client";
+import { createFile } from "@/lib/storage";
 
 import React, { useState } from "react";
 import Link from "next/link";
@@ -13,14 +14,7 @@ export default function Home() {
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch("/api/files", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path: newName.startsWith("/") ? newName : `/${newName}`,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await createFile(newName.startsWith("/") ? newName : `/${newName}`);
       window.location.href = `/drawpad?path=${encodeURIComponent(newName.startsWith("/") ? newName : `/${newName}`)}`;
     } catch (e: any) {
       setErr(e.message || "Failed to create");

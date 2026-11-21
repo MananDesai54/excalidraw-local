@@ -1,4 +1,5 @@
 "use client";
+import { listDir, createFile } from "@/lib/storage";
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 
@@ -36,11 +37,7 @@ export default function FileBrowserModal({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as Entry[];
+      const data = (await listDir(dir)) as Entry[];
       setItems(
         data.sort((a, b) =>
           a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1,
@@ -61,12 +58,7 @@ export default function FileBrowserModal({
       const name = newFolder.replace(/\/+$/, ""); // no trailing slash
       const folderPath = joinPath(dir, name);
       const sentinel = joinPath(folderPath, ".keep");
-      const res = await fetch("/api/files", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: sentinel }), // server will mkdir -p for the file
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await createFile(sentinel); // mkdir -p for the file
       setDir(folderPath.endsWith("/") ? folderPath : folderPath + "/"); // jump into it
     } catch (e: any) {
       setError(e.message || "Failed to create folder");
@@ -116,12 +108,7 @@ export default function FileBrowserModal({
         ? newName
         : `${newName}.excalidraw`;
       const p = joinPath(dir, name);
-      const res = await fetch("/api/files", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: p.startsWith("/") ? p : `/${p}` }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await createFile(p.startsWith("/") ? p : `/${p}`);
       onPick(p.startsWith("/") ? p : `/${p}`);
     } catch (e: any) {
       setError(e.message || "Failed to create");
