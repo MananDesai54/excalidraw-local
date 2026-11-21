@@ -1,65 +1,65 @@
 // Storage layer for drawings.
 // - Desktop (Tauri): calls Rust commands that read/write the filesystem directly.
-// - Web (Next.js server / Docker): falls back to the /api routes.
+// - Web (Next.js server / Docker): the same operations through POST /api/fs.
 
-export type Entry = { name: string; isDir: boolean; size: number; mtime: string | number };
+export type Entry = { name: string; isDir: boolean; size: number; mtime: number };
+export type DrawingInfo = {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  thumbMtime: number;
+  text: string;
+};
 
-type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+export const isDesktop = () =>
+  typeof window !== "undefined" && !!(window as any).__TAURI__?.core?.invoke;
 
-function tauriInvoke(): Invoke | null {
-  if (typeof window === "undefined") return null;
-  const t = (window as any).__TAURI__;
-  return t?.core?.invoke ?? null;
-}
-
-async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { cache: "no-store", ...init });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<T>;
-}
-
-function errMsg(e: unknown): Error {
-  return e instanceof Error ? e : new Error(String(e));
-}
-
-export async function listDir(dir: string): Promise<Entry[]> {
-  const invoke = tauriInvoke();
-  if (invoke) return invoke<Entry[]>("list_dir", { dir }).catch((e) => { throw errMsg(e); });
-  return http<Entry[]>(`/api/files?dir=${encodeURIComponent(dir)}`);
-}
-
-/** Create a new file (fails if it exists); parent folders are created. */
-export async function createFile(path: string, template?: unknown): Promise<void> {
-  const invoke = tauriInvoke();
-  if (invoke) {
-    await invoke("create_file", { path, template: template ?? null }).catch((e) => { throw errMsg(e); });
-    return;
+async function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (isDesktop()) {
+    try {
+      return await (window as any).__TAURI__.core.invoke(op, args);
+    } catch (e) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
   }
-  await http(`/api/files`, {
+  const res = await fetch("/api/fs", {
     method: "POST",
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, template }),
+    body: JSON.stringify({ op, args }),
   });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()).result as T;
 }
 
-export async function readDrawing(path: string): Promise<{ data: any }> {
-  const invoke = tauriInvoke();
-  if (invoke) {
-    const data = await invoke<any>("read_drawing", { path }).catch((e) => { throw errMsg(e); });
-    return { data };
-  }
-  return http(`/api/drawing?path=${encodeURIComponent(path)}`);
-}
+export const getRoot = () => call<string>("get_root");
+export const setRoot = (root: string) => call<string>("set_root", { root });
+export const listDir = (dir: string) => call<Entry[]>("list_dir", { dir });
+export const scan = () => call<DrawingInfo[]>("scan");
+/** Create a new file (fails if it exists); parent folders are created. */
+export const createFile = (path: string, template?: unknown) =>
+  call<void>("create_file", { path, template: template ?? null });
+export const createDir = (path: string) => call<void>("create_dir", { path });
+export const readDrawing = async (path: string) => ({
+  data: await call<any>("read_drawing", { path }),
+});
+export const saveDrawing = async (path: string, data: unknown) => {
+  await call<void>("save_drawing", { path, data });
+  return { ok: true };
+};
+/** Write a sidecar file; returns its absolute path on disk. */
+export const writeFile = (path: string, content: string, base64 = false) =>
+  call<string>("write_file", { path, content, base64 });
+export const readThumb = (path: string) => call<string | null>("read_thumb", { path });
+export const writeThumb = (path: string, svg: string) => call<void>("write_thumb", { path, svg });
+export const rename = (from: string, to: string) => call<void>("rename", { from, to });
+export const trash = (path: string) => call<void>("trash", { path });
 
-export async function saveDrawing(path: string, data: unknown): Promise<{ ok: boolean }> {
-  const invoke = tauriInvoke();
-  if (invoke) {
-    await invoke("save_drawing", { path, data }).catch((e) => { throw errMsg(e); });
-    return { ok: true };
-  }
-  return http(`/api/drawing?path=${encodeURIComponent(path)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-}
+// path helpers
+export const dirname = (p: string) => p.replace(/\/[^/]*$/, "") || "/";
+export const basename = (p: string) => p.split("/").filter(Boolean).pop() || "";
+export const joinPath = (a: string, b: string) =>
+  (a.endsWith("/") ? a : a + "/") + b.replace(/^\/+/, "");
+export const stripExt = (n: string) => n.replace(/\.excalidraw$/, "");
+export const withExt = (n: string) => (n.endsWith(".excalidraw") ? n : `${n}.excalidraw`);

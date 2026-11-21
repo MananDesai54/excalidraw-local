@@ -1,6 +1,6 @@
 export const metadata = {
-  title: "Excalidraw Drawpad",
-  description: "Self-hosted Excalidraw with server-backed saves",
+  title: "Drawpad",
+  description: "Excalidraw drawings as local files — a diagram library for documentation",
 };
 
 import "./globals.css";

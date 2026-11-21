@@ -1,204 +1,317 @@
 "use client";
-import { readDrawing, saveDrawing } from "@/lib/storage";
+import "@/lib/excalidraw"; // must run before Excalidraw loads (local font path)
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import Link from "next/link";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types/types";
-import FileBrowserModal from "@/components/FileBrowserModal";
 import { useRouter } from "next/navigation";
+import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types/types";
+import {
+  basename,
+  dirname,
+  readDrawing,
+  rename,
+  saveDrawing,
+  stripExt,
+  withExt,
+  joinPath,
+  writeFile,
+  writeThumb,
+} from "@/lib/storage";
+import { sceneToPngBase64, sceneToSvg, type Scene } from "@/lib/excalidraw";
+import QuickOpen from "@/components/QuickOpen";
+import { DialogHost, prompt, useToast } from "@/components/Dialogs";
 
 const Excalidraw = dynamic(
   () => import("@excalidraw/excalidraw").then((m) => m.Excalidraw),
   { ssr: false },
 );
 
-type InitialData = any;
-
-async function fetchJSON(path: string) {
-  return readDrawing(path) as Promise<{ data: InitialData }>;
-}
-
-async function saveJSON(path: string, data: any) {
-  return saveDrawing(path, data);
-}
+type SyncExport = { svg?: boolean; png?: boolean };
 
 // Drop/repair collaborators so Excalidraw doesn't choke on non-Map values
 function sanitizeForInitialData(data: any) {
   const out = { ...(data || {}) };
   out.appState = { ...(out.appState || {}) };
-  const c = (out.appState as any).collaborators;
-  if (c && typeof (c as any).forEach !== "function") {
-    if (Array.isArray(c)) (out.appState as any).collaborators = new Map(c);
-    else if (typeof c === "object")
-      (out.appState as any).collaborators = new Map(Object.entries(c));
-    else delete (out.appState as any).collaborators;
-  }
-  if (!(out.appState as any).collaborators)
-    (out.appState as any).collaborators = new Map();
+  delete out.appState.collaborators;
+  out.appState.collaborators = new Map();
+  if (!out.appState.theme) out.appState.theme = "dark";
   return out;
 }
 
+/** Changes only when something worth saving changed (not on selection/scroll). */
+function signature(elements: readonly any[], appState: any, files: any) {
+  let v = 0;
+  for (const e of elements) v += e.version;
+  return `${elements.length}:${v}:${appState?.viewBackgroundColor}:${appState?.theme}:${Object.keys(files || {}).length}`;
+}
+
+const drawUrl = (p: string) => `/drawpad?path=${encodeURIComponent(p)}`;
+
 export default function ExcalidrawPad({ path }: { path: string }) {
-  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
-  const [initial, setInitial] = useState<InitialData | null>(null);
-  const [status, setStatus] = useState<"idle" | "dirty" | "saving" | "saved">(
-    "idle",
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
   const router = useRouter();
-  const [fbOpen, setFbOpen] = useState(false);
+  const toast = useToast();
+  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
+  const [initial, setInitial] = useState<any | null>(null);
+  const [status, setStatus] = useState<"idle" | "dirty" | "saving" | "saved">("idle");
+  const [sync, setSync] = useState<SyncExport>({});
+  const [qoOpen, setQoOpen] = useState(false);
 
-  const timer = useRef<NodeJS.Timeout | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSig = useRef<string | null>(null);
+  const loadedAt = useRef(0);
+  const dirty = useRef(false);
+  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const syncRef = useRef<SyncExport>({});
+  apiRef.current = api;
+  syncRef.current = sync;
 
-  // mount flag (avoid hydration flicker)
-  useEffect(() => setMounted(true), []);
+  const name = stripExt(basename(path));
 
-  // preload
   useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await fetchJSON(path);
+    document.title = `${name} · Drawpad`;
+  }, [name]);
+
+  // load
+  useEffect(() => {
+    let alive = true;
+    setInitial(null);
+    lastSig.current = null;
+    readDrawing(path)
+      .then(({ data }) => {
+        if (!alive) return;
+        setSync(data?.localExport || {});
+        loadedAt.current = Date.now();
         setInitial(sanitizeForInitialData(data));
-      } catch (e: any) {
-        setError(e.message || "Failed to load");
-      }
-    })();
+      })
+      .catch((e) => toast.show(`Could not open: ${e.message || e}`, true));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
+  const currentScene = (): Scene | null => {
+    const a = apiRef.current;
+    if (!a) return null;
+    return {
+      elements: a.getSceneElementsIncludingDeleted(),
+      appState: a.getAppState(),
+      files: a.getFiles(),
+    };
+  };
+
+  /** Write SVG/PNG next to the drawing. Returns the written paths. */
+  const exportSidecars = useCallback(
+    async (kinds: SyncExport, scene: Scene) => {
+      const base = stripExt(path);
+      const written: string[] = [];
+      if (kinds.svg) written.push(await writeFile(`${base}.svg`, await sceneToSvg(scene, { portable: true })));
+      if (kinds.png) written.push(await writeFile(`${base}.png`, await sceneToPngBase64(scene), true));
+      return written;
+    },
+    [path],
+  );
+
   const doSave = useCallback(async () => {
-    if (!api) return;
+    const scene = currentScene();
+    if (!scene) return;
+    if (timer.current) clearTimeout(timer.current);
     try {
       setStatus("saving");
-      const elements =
-        api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.();
-      const rawAppState = api.getAppState?.();
-      const { collaborators, ...appState } = rawAppState || {}; // don't persist collaborators
-      const files = api.getFiles?.();
-      const payload = {
+      const { collaborators, ...appState } = (scene.appState || {}) as any;
+      const payload: any = {
         type: "excalidraw",
         version: 2,
-        elements,
+        source: "excalidraw-local",
+        elements: scene.elements,
         appState,
-        files,
+        files: scene.files,
       };
-      await saveJSON(path, payload);
+      if (syncRef.current.svg || syncRef.current.png) payload.localExport = syncRef.current;
+      await saveDrawing(path, payload);
+      dirty.current = false;
       setStatus("saved");
-      setTimeout(() => setStatus("idle"), 1200);
+      // Thumbnail + synced exports are best effort and never block saving.
+      sceneToSvg(scene, { padding: 10 })
+        .then((svg) => writeThumb(path, svg))
+        .catch(() => {});
+      exportSidecars(syncRef.current, scene).catch((e) => toast.show(`Export failed: ${e.message || e}`, true));
+      setTimeout(() => setStatus((s) => (s === "saved" ? "idle" : s)), 1200);
     } catch (e: any) {
       setStatus("dirty");
-      setError(String(e?.message || e));
+      toast.show(`Save failed: ${e?.message || e}`, true);
     }
-  }, [api, path]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, exportSidecars]);
 
-  // autosave after 1.2s idle
-  const onChange = useCallback(() => {
-    setStatus("dirty");
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => void doSave(), 1200);
-  }, [doSave]);
+  // Autosave 800ms after the drawing (not the selection/viewport) changes.
+  const onChange = useCallback(
+    (elements: readonly any[], appState: any, files: any) => {
+      const sig = signature(elements, appState, files);
+      // Right after load Excalidraw normalises the scene and re-measures text
+      // once fonts arrive; treat that as the baseline, not as an edit.
+      if (lastSig.current === null || Date.now() - loadedAt.current < 1500) {
+        lastSig.current = sig;
+        return;
+      }
+      if (sig === lastSig.current) return;
+      lastSig.current = sig;
+      dirty.current = true;
+      setStatus("dirty");
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void doSave(), 800);
+    },
+    [doSave],
+  );
 
-  // ⌘/Ctrl+S to save
+  // Never lose edits when leaving the page.
+  useEffect(
+    () => () => {
+      if (dirty.current) void doSave();
+    },
+    [doSave],
+  );
+
+  const leaveTo = async (url: string) => {
+    if (dirty.current) await doSave();
+    router.push(url);
+  };
+
+  async function renameDrawing() {
+    const next = await prompt({
+      title: "Rename drawing",
+      label: "Use a path like /other-folder/name to move it.",
+      value: basename(path),
+      confirm: "Rename",
+    });
+    if (!next || next === basename(path)) return;
+    const target = withExt(next.startsWith("/") ? next : joinPath(dirname(path), next));
+    try {
+      if (dirty.current) await doSave();
+      await rename(path, target);
+      router.replace(drawUrl(target));
+    } catch (e: any) {
+      toast.show(e?.message || String(e), true);
+    }
+  }
+
+  async function toggleSync(kind: "svg" | "png") {
+    const next = { ...sync, [kind]: !sync[kind] };
+    setSync(next);
+    syncRef.current = next;
+    const scene = currentScene();
+    if (!scene) return;
+    try {
+      // Persist the preference in the drawing file and export right away.
+      dirty.current = true;
+      await doSave();
+      if (next[kind]) {
+        const [file] = await exportSidecars({ [kind]: true }, scene);
+        const md = `![${name}](./${basename(file)})`;
+        toast.show(
+          <>
+            <span>
+              {kind.toUpperCase()} kept in sync at <b>{file}</b>
+            </span>
+            <button
+              className="btn btn--sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigator.clipboard?.writeText(md).then(
+                  () => toast.show("Markdown copied"),
+                  () => toast.show(md, false, 8000),
+                );
+              }}
+            >
+              Copy markdown
+            </button>
+          </>,
+          false,
+          8000,
+        );
+      }
+    } catch (e: any) {
+      toast.show(`Export failed: ${e?.message || e}`, true);
+    }
+  }
+
+  // Shortcuts. Capture phase so Excalidraw's own Ctrl+S/O (browser file
+  // dialogs) don't fire.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "s") {
         e.preventDefault();
+        e.stopPropagation();
         void doSave();
+      } else if (k === "o" || k === "p") {
+        e.preventDefault();
+        e.stopPropagation();
+        setQoOpen(true);
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, [doSave]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        setFbOpen(true);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  // status text
   const statusLabel =
-    status === "saving"
-      ? "Saving…"
-      : status === "saved"
-        ? "Saved"
-        : status === "dirty"
-          ? "Unsaved changes"
-          : " ";
+    status === "saving" ? "Saving…" : status === "saved" ? "Saved" : status === "dirty" ? "Unsaved" : "All changes saved";
+  const pillClass =
+    status === "saved" ? "pill--ok" : status === "saving" ? "pill--busy" : status === "dirty" ? "pill--warn" : "";
+  const folder = dirname(path);
 
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/" className="brand">
-          ✏️ Drawpad
-        </Link>
-        <div className="spacer" />
-        <span
-          className={`pill ${
-            status === "saved"
-              ? "pill--ok"
-              : status === "saving"
-                ? "pill--busy"
-                : status === "dirty"
-                  ? "pill--warn"
-                  : ""
-          }`}
-          aria-live="polite"
-        >
+        <button className="btn btn--ghost" onClick={() => leaveTo(folder === "/" ? "/" : `/?dir=${encodeURIComponent(folder)}`)} title="Back to library">
+          ← Library
+        </button>
+        <div className="doc-title" onClick={renameDrawing} title="Click to rename" style={{ cursor: "pointer" }}>
+          <strong>{name}</strong>
+          <span>{folder}</span>
+        </div>
+        <span className={`pill ${pillClass}`} aria-live="polite">
           {status === "saving" && <span className="spinner" aria-hidden />}
           {statusLabel}
         </span>
-        <button
-          className="btn"
-          onClick={() => setFbOpen(true)}
-          title="Open (⌘/Ctrl+O)"
-        >
-          Open
+        <div className="spacer" />
+        <div className="toggle" title="Keep an image next to the drawing, updated on every save, for embedding in docs">
+          <span className="toggle__label">Export</span>
+          <button className={`btn ${sync.svg ? "on" : ""}`} onClick={() => toggleSync("svg")}>
+            SVG
+          </button>
+          <button className={`btn ${sync.png ? "on" : ""}`} onClick={() => toggleSync("png")}>
+            PNG
+          </button>
+        </div>
+        <button className="btn" onClick={() => setQoOpen(true)} title="Jump to another drawing">
+          Open <kbd>Ctrl P</kbd>
         </button>
-
-        <button
-          className={`btn btn--primary ${status === "saving" ? "btn--loading" : ""}`}
-          onClick={doSave}
-          disabled={status === "saving"}
-          title="Save (⌘/Ctrl+S)"
-        >
-          {status === "saving" ? <span className="spinner" /> : "Save"}
-          <kbd className="keyhint">⌘S</kbd>
+        <button className="btn btn--primary" onClick={() => void doSave()} disabled={status === "saving"}>
+          Save <kbd>Ctrl S</kbd>
         </button>
       </header>
 
-      {error && (
-        <div className="toast toast--error">
-          <strong>Save failed:</strong> {error}
-        </div>
-      )}
-
       <main className="canvas">
-        {mounted && (
+        {initial && (
           <Excalidraw
-            excalidrawAPI={(inst) => setApi(inst)}
-            initialData={initial ?? undefined}
+            key={path}
+            excalidrawAPI={(inst) => {
+              loadedAt.current = Date.now();
+              setApi(inst);
+            }}
+            initialData={initial}
             onChange={onChange}
-            theme="dark"
+            name={name}
+            UIOptions={{ canvasActions: { loadScene: false } }}
           />
         )}
       </main>
-      <FileBrowserModal
-        open={fbOpen}
-        startDir={path.split("/").slice(0, -1).join("/") || "/"}
-        onClose={() => setFbOpen(false)}
-        onPick={(p) => {
-          setFbOpen(false);
-          // navigate to the picked file; the page will re-render with new ?path=
-          router.push(`/drawpad?path=${encodeURIComponent(p)}`);
-        }}
-      />
+
+      <QuickOpen open={qoOpen} onClose={() => setQoOpen(false)} onPick={(p) => { setQoOpen(false); void leaveTo(drawUrl(p)); }} />
+      <DialogHost />
+      {toast.node}
     </div>
   );
 }

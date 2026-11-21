@@ -144,3 +144,4 @@ vite.config.ts.timestamp-*
 # Tauri
 src-tauri/target
 src-tauri/gen
+public/excalidraw-assets

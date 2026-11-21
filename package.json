@@ -7,8 +7,11 @@
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
-    "desktop:build": "STATIC_EXPORT=1 next build && cargo build --release --manifest-path src-tauri/Cargo.toml",
-    "desktop:install": "npm run desktop:build && install -Dm755 src-tauri/target/release/excalidraw-local ~/.local/bin/excalidraw-local"
+    "desktop:build": "npm run assets && STATIC_EXPORT=1 next build && cargo build --release --manifest-path src-tauri/Cargo.toml",
+    "desktop:install": "npm run desktop:build && install -Dm755 src-tauri/target/release/excalidraw-local ~/.local/bin/excalidraw-local",
+    "assets": "node -e \"require('fs').cpSync('node_modules/@excalidraw/excalidraw/dist/excalidraw-assets','public/excalidraw-assets',{recursive:true})\"",
+    "predev": "npm run assets",
+    "prebuild": "npm run assets"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.17.0",
