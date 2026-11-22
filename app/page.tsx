@@ -307,14 +307,22 @@ function Library() {
             {folders.length > 0 && (
               <>
                 <div className="section-title">Folders</div>
-                <div className="folders">
+                <div className="grid grid--folders">
                   {folders.map((f) => {
                     const p = joinPath(dir, f.name);
                     const count = all.filter((d) => d.path.startsWith(p + "/")).length;
                     return (
-                      <div key={f.name} className="folder" onClick={() => router.push(dirUrl(p))}>
-                        📁 {f.name} <span className="muted">{count}</span>
-                        <span className="card__menu" onClick={(e) => e.stopPropagation()}>
+                      <div key={f.name} className="ftile" onClick={() => router.push(dirUrl(p))} title={p}>
+                        <svg className="ftile__icon" viewBox="0 0 24 24" aria-hidden>
+                          <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.38a1.5 1.5 0 0 1 1.06.44L11.5 7h8A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
+                        </svg>
+                        <div className="ftile__text">
+                          <div className="ftile__name">{f.name}</div>
+                          <div className="card__meta">
+                            {count} drawing{count === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <span className="ftile__menu" onClick={(e) => e.stopPropagation()}>
                           <button className="btn btn--sm" onClick={() => renameItem(p, true)}>Rename</button>
                           <button className="btn btn--sm btn--danger" onClick={() => remove(p, true)}>Delete</button>
                         </span>

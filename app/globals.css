@@ -564,3 +564,56 @@ kbd,
     flex-wrap: wrap;
     justify-content: center;
 }
+
+/* Folder tiles (Drive-style), same columns as drawing cards */
+.grid--folders {
+    gap: 10px;
+}
+.ftile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+    cursor: pointer;
+    position: relative;
+    min-width: 0;
+}
+.ftile:hover {
+    border-color: rgba(124, 156, 255, 0.45);
+    background: #14171e;
+}
+.ftile__icon {
+    width: 26px;
+    height: 26px;
+    flex: none;
+    fill: var(--brand);
+    opacity: 0.85;
+}
+.ftile__text {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+.ftile__name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ftile__menu {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    gap: 4px;
+}
+.ftile:hover .ftile__menu {
+    display: flex;
+}
+.ftile__menu .btn {
+    background: rgba(17, 19, 24, 0.95);
+}

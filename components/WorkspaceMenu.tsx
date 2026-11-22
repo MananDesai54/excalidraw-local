@@ -40,7 +40,7 @@ export default function WorkspaceMenu({
 
   return (
     <div className="ws" ref={ref}>
-      <button className="btn ws__btn" onClick={() => setOpen((o) => !o)} title={root}>
+      <button className="btn ws__btn" onClick={() => setOpen((o) => !o)} title={open ? undefined : root}>
         📂 <span className="ws__name">{root ? name(root) : "…"}</span> ▾
       </button>
       {open && (
