@@ -31,11 +31,45 @@ const Excalidraw = dynamic(
 
 type SyncExport = { svg?: boolean; png?: boolean };
 
-// Drop/repair collaborators so Excalidraw doesn't choke on non-Map values
+// appState worth keeping in the file. Everything else is live UI state
+// (e.g. editingElement: a text box mid-edit is hidden on the canvas, so a
+// file saved while typing opened blank).
+const PERSIST_KEYS = [
+  "theme",
+  "viewBackgroundColor",
+  "gridSize",
+  "scrollX",
+  "scrollY",
+  "zoom",
+  "currentItemStrokeColor",
+  "currentItemBackgroundColor",
+  "currentItemFillStyle",
+  "currentItemStrokeWidth",
+  "currentItemStrokeStyle",
+  "currentItemRoughness",
+  "currentItemOpacity",
+  "currentItemFontFamily",
+  "currentItemFontSize",
+  "currentItemTextAlign",
+  "currentItemStartArrowhead",
+  "currentItemEndArrowhead",
+  "currentItemRoundness",
+  "exportBackground",
+  "exportEmbedScene",
+  "exportScale",
+  "exportWithDarkMode",
+  "name",
+];
+
+function persistentAppState(appState: any) {
+  const out: any = {};
+  for (const k of PERSIST_KEYS) if (appState && appState[k] !== undefined) out[k] = appState[k];
+  return out;
+}
+
 function sanitizeForInitialData(data: any) {
   const out = { ...(data || {}) };
-  out.appState = { ...(out.appState || {}) };
-  delete out.appState.collaborators;
+  out.appState = persistentAppState(out.appState);
   out.appState.collaborators = new Map();
   if (!out.appState.theme) out.appState.theme = "dark";
   return out;
@@ -116,7 +150,7 @@ export default function ExcalidrawPad({ path }: { path: string }) {
   );
 
   const toPayload = (scene: Scene) => {
-    const { collaborators, ...appState } = (scene.appState || {}) as any;
+    const appState = persistentAppState(scene.appState);
     const payload: any = {
       type: "excalidraw",
       version: 2,
